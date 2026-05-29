@@ -3,70 +3,103 @@ from internal.utils.result import OptimizationResult
 
 
 class PowellDogLeg:
-    """ Метод Powell's Dog Leg в рамках концепции Trust Region (Доверительной области). """
+    def __init__(self, max_iter=1000, max_tr=10.0, initial_tr=1.0):
+        self.max_iter = max_iter
+        self.max_tr = max_tr
+        self.initial_tr = initial_tr
 
-    def minimize(self, oracle, x0, tol=1e-8, max_iter=1000, delta_max=10.0, delta_init=1.0, eta=0.15):
-        x = x0.astype(float)
+    def minimize(self, oracle, x0, tol=1e-5):
+        x = np.array(x0, dtype=float)
+        tr_radius = self.initial_tr
         path = [x.copy()]
-        delta = delta_init
 
-        for k in range(max_iter):
+        status = "Max iterations reached"
+        iters = self.max_iter  # Дефолтное значение
+
+        for i in range(self.max_iter):
             g = oracle.grad(x)
-            if np.linalg.norm(g) <= tol:
-                return OptimizationResult(x, oracle.f(x), k, oracle.f_count, oracle.g_count, oracle.h_count,
-                                          "Converged", path)
-
-            H = oracle.hess(x)
-
-            # Полный шаг Ньютона
-            try:
-                pB = np.linalg.solve(H, -g)
-            except np.linalg.LinAlgError:
-                # Адаптивный шаг в случае вырожденности
-                pB = -g * 0.1
-
-            # Шаг Коши (направление наискорейшего спуска)
-            gHg = np.dot(g, H @ g)
             norm_g = np.linalg.norm(g)
-            if gHg <= 0:
-                pC = -g * (delta / norm_g)
-            else:
-                pC = - (norm_g ** 2 / gHg) * g
 
-            # Расчет итогового шага вдоль ломаной "Dogleg"
-            norm_pB = np.linalg.norm(pB)
+            if norm_g < tol:
+                status = "Converged"
+                iters = i  # Записываем точное число пройденных итераций
+                break
+
+            B = oracle.hess(x)
+
+            # Точка Коши (Cauchy Point)
+            gBg = np.dot(g, np.dot(B, g))
+            if gBg <= 0:
+                tau = 1.0
+            else:
+                tau = min(1.0, norm_g ** 3 / (tr_radius * gBg))
+
+            pC = -tau * (tr_radius / norm_g) * g
             norm_pC = np.linalg.norm(pC)
 
-            if norm_pB <= delta:
-                p = pB
-            elif norm_pC >= delta:
-                p = (delta / norm_pC) * pC
+            # Ньютоновский шаг
+            try:
+                pN = np.linalg.solve(B, -g)
+            except np.linalg.LinAlgError:
+                pN = pC  # Фолбэк, если матрица вырождена
+
+            norm_pN = np.linalg.norm(pN)
+
+            # Выбор шага DogLeg
+            if norm_pN <= tr_radius:
+                p = pN
+            elif norm_pC >= tr_radius:
+                if norm_pC < 1e-12:
+                    p = np.zeros_like(pC)
+                else:
+                    p = (tr_radius / norm_pC) * pC
             else:
-                # Пересечение с границей доверительной области: ||pC + beta*(pB - pC)|| = delta
-                d = pB - pC
-                c_dot = np.dot(pC, d)
-                norm_d2 = np.dot(d, d)
-                discriminant = c_dot ** 2 - norm_d2 * (norm_pC ** 2 - delta ** 2)
-                beta = (-c_dot + np.sqrt(discriminant)) / norm_d2
-                p = pC + beta * d
+                pB_pC = pN - pC
+                a = np.dot(pB_pC, pB_pC)
+                b = 2 * np.dot(pC, pB_pC)
+                c = np.dot(pC, pC) - tr_radius ** 2
 
-            # Проверка качества предсказания модели
-            f_current = oracle.f(x)
-            actual_reduction = f_current - oracle.f(x + p)
-            predicted_reduction = -np.dot(g, p) - 0.5 * np.dot(p, H @ p)
+                discriminant = b ** 2 - 4 * a * c
+                if discriminant < 0 or a == 0:
+                    p = pC
+                else:
+                    tau_intersect = (-b + np.sqrt(discriminant)) / (2 * a)
+                    p = pC + tau_intersect * pB_pC
 
-            rho = actual_reduction / predicted_reduction if predicted_reduction != 0 else 0.0
+            # Оценка шага (Trust Region Update)
+            m_p = np.dot(g, p) + 0.5 * np.dot(p, np.dot(B, p))
 
-            if rho > eta:
+            # ИСПРАВЛЕНИЕ: Используем .f(...) вместо .func(...) для совместимости с оракулом
+            f_x = oracle.f(x)
+            f_new = oracle.f(x + p)
+
+            actual_reduction = f_x - f_new
+            predicted_reduction = -m_p
+
+            if predicted_reduction < 1e-12:
+                rho = 0
+            else:
+                rho = actual_reduction / predicted_reduction
+
+            if rho < 0.25:
+                tr_radius *= 0.25
+            else:
+                if rho > 0.75 and np.abs(np.linalg.norm(p) - tr_radius) < 1e-8:
+                    tr_radius = min(2.0 * tr_radius, self.max_tr)
+
+            if rho > 0:
                 x = x + p
                 path.append(x.copy())
 
-            # Изменение размеров доверительной области
-            if rho < 0.25:
-                delta *= 0.25
-            else:
-                if rho > 0.75 and np.linalg.norm(p) == delta:
-                    delta = min(2.0 * delta, delta_max)
-
-        return OptimizationResult(x, oracle.f(x), max_iter, oracle.f_count, oracle.g_count, oracle.h_count,
-                                  "Max iterations reached", path)
+        # ИСПРАВЛЕНИЕ: Передаем строго все поля, требуемые датаклассом OptimizationResult,
+        # включая счетчики вызовов функций (f_evals, g_evals, h_evals) для корректного вывода таблицы.
+        return OptimizationResult(
+            x_opt=x,
+            f_opt=oracle.f(x),
+            iters=iters,
+            f_evals=oracle.f_count,
+            g_evals=oracle.g_count,
+            h_evals=oracle.h_count,
+            status=status,
+            path=path
+        )
