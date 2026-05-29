@@ -14,7 +14,7 @@ class PowellDogLeg:
         path = [x.copy()]
 
         status = "Max iterations reached"
-        iters = self.max_iter  # Дефолтное значение
+        iters = self.max_iter
 
         for i in range(self.max_iter):
             g = oracle.grad(x)
@@ -22,10 +22,17 @@ class PowellDogLeg:
 
             if norm_g < tol:
                 status = "Converged"
-                iters = i  # Записываем точное число пройденных итераций
+                iters = i
                 break
 
             B = oracle.hess(x)
+
+            # ИСПРАВЛЕНИЕ: Регуляризация матрицы Гессе для невыпуклых функций (Himmelblau, Ackley)
+            # Если матрица не является положительно определенной, сдвигаем её спектр
+            w, v = np.linalg.eigh(B)
+            if np.min(w) <= 1e-4:
+                tau_reg = max(0.0, 1e-3 - np.min(w))
+                B = B + tau_reg * np.eye(len(x))
 
             # Точка Коши (Cauchy Point)
             gBg = np.dot(g, np.dot(B, g))
@@ -41,7 +48,7 @@ class PowellDogLeg:
             try:
                 pN = np.linalg.solve(B, -g)
             except np.linalg.LinAlgError:
-                pN = pC  # Фолбэк, если матрица вырождена
+                pN = pC
 
             norm_pN = np.linalg.norm(pN)
 
@@ -69,7 +76,6 @@ class PowellDogLeg:
             # Оценка шага (Trust Region Update)
             m_p = np.dot(g, p) + 0.5 * np.dot(p, np.dot(B, p))
 
-            # ИСПРАВЛЕНИЕ: Используем .f(...) вместо .func(...) для совместимости с оракулом
             f_x = oracle.f(x)
             f_new = oracle.f(x + p)
 
@@ -91,15 +97,14 @@ class PowellDogLeg:
                 x = x + p
                 path.append(x.copy())
 
-        # ИСПРАВЛЕНИЕ: Передаем строго все поля, требуемые датаклассом OptimizationResult,
-        # включая счетчики вызовов функций (f_evals, g_evals, h_evals) для корректного вывода таблицы.
+        # ИСПРАВЛЕНИЕ: Возвращаем строго позиционный формат аргументов для совместимости с OptimizationResult
         return OptimizationResult(
-            x_opt=x,
-            f_opt=oracle.f(x),
-            iters=iters,
-            f_evals=oracle.f_count,
-            g_evals=oracle.g_count,
-            h_evals=oracle.h_count,
-            status=status,
-            path=path
+            x,
+            oracle.f(x),
+            iters,
+            oracle.f_count,
+            oracle.g_count,
+            oracle.h_count,
+            status,
+            path
         )
