@@ -1,14 +1,16 @@
 import numpy as np
 
+
 class RosenbrockFunction:
-    """
-    Функция Розенброка произвольной размерности (обычно n=2).
-    """
+    name = "Rosenbrock"
+    x_opt = np.array([1.0, 1.0])
+
     def f(self, x):
-        return sum(100.0 * (x[i+1] - x[i]**2)**2 + (1.0 - x[i])**2 for i in range(len(x)-1))
+        return float(sum(100.0 * (x[i+1] - x[i]**2)**2 + (1.0 - x[i])**2
+                         for i in range(len(x)-1)))
 
     def grad(self, x):
-        g = np.zeros_like(x)
+        g = np.zeros_like(x, dtype=float)
         for i in range(len(x)-1):
             g[i] += -400.0 * x[i] * (x[i+1] - x[i]**2) - 2.0 * (1.0 - x[i])
             g[i+1] += 200.0 * (x[i+1] - x[i]**2)

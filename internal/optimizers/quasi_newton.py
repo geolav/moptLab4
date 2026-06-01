@@ -1,143 +1,156 @@
 import numpy as np
-from internal.utils.result import OptimizationResult
-from internal.optimizers.cg import backtracking_line_search
+from typing import Callable
+from ..utils import OptResult, CallCounter
+from .cg import wolfe_line_search, MAX_ITER
 
 
-class DFPOptimizer:
-    """ Квазиньютоновский метод Давидона–Флетчера–Пауэлла. """
+def dfp(
+    f: Callable, grad: Callable, hess: Callable,
+    x0: np.ndarray, eps: float = 1e-8, max_iter: int = MAX_ITER
+) -> OptResult:
+    cf = CallCounter(f); cg = CallCounter(grad); ch = CallCounter(hess)
 
-    def minimize(self, oracle, x0, tol=1e-8, max_iter=1000):
-        x = x0.astype(float)
-        n = len(x)
-        path = [x.copy()]
-        I = np.eye(n)
-        G = I.copy()  # Приближение обратного Гессиана
+    x = x0.copy().astype(float)
+    n = len(x)
+    I = np.eye(n)
+    H = I.copy()
+    traj = [x.copy()]
+    g = cg(x)
+    fx = cf(x)
 
-        g = oracle.grad(x)
-        for k in range(max_iter):
-            if np.linalg.norm(g) <= tol:
-                return OptimizationResult(x, oracle.f(x), k, oracle.f_count, oracle.g_count, oracle.h_count,
-                                          "Converged", path)
+    for k in range(max_iter):
+        if np.linalg.norm(g) < eps:
+            return OptResult(x, fx, k, cf.count, cg.count, ch.count,
+                             True, "Сходимость по градиенту", traj)
+        p = -H @ g
+        if float(p @ g) >= 0:
+            H = I.copy()
+            p = -g
+        alpha = wolfe_line_search(cf, cg, x, p, fx, g)
+        x_next = x + alpha * p
+        traj.append(x_next.copy())
+        f_next = cf(x_next)
+        g_next = cg(x_next)
+        if abs(f_next - fx) <= 1e-14 * (1.0 + abs(fx)):
+            conv = np.linalg.norm(g_next) < eps
+            status = "Сходимость по градиенту" if conv else "Стагнация по функции"
+            return OptResult(x_next, f_next, k + 1, cf.count, cg.count, ch.count,
+                             conv, status, traj)
+        s = x_next - x
+        y = g_next - g
+        sy = float(s @ y)
+        if sy > 1e-10:
+            Hy = H @ y
+            H = H + np.outer(s, s) / sy - np.outer(Hy, Hy) / float(y @ Hy)
+        x, g = x_next, g_next
+        fx = f_next
 
-            p = -G @ g
-            if np.dot(p, g) >= 0:  # Возвращаемся к градиентному шагу в случае потери положительной определенности
-                G = I.copy()
-                p = -g
-
-            alpha = backtracking_line_search(oracle, x, p, g)
-            x_next = x + alpha * p
-            path.append(x_next.copy())
-
-            g_next = oracle.grad(x_next)
-            s = x_next - x
-            y = g_next - g
-
-            # Формула обновления DFP
-            y_G_y = np.dot(y, G @ y)
-            s_dot_y = np.dot(s, y)
-
-            if s_dot_y > 1e-10:
-                G = G + np.outer(s, s) / s_dot_y - (G @ np.outer(y, y) @ G) / y_G_y
-
-            x, g = x_next, g_next
-
-        return OptimizationResult(x, oracle.f(x), max_iter, oracle.f_count, oracle.g_count, oracle.h_count,
-                                  "Max iterations reached", path)
-
-
-class BFGSOptimizer:
-    """ Квазиньютоновский метод Бройдена–Флетчера–Гольдфарба–Шанно. """
-
-    def minimize(self, oracle, x0, tol=1e-8, max_iter=1000):
-        x = x0.astype(float)
-        n = len(x)
-        path = [x.copy()]
-        I = np.eye(n)
-        G = I.copy()
-
-        g = oracle.grad(x)
-        for k in range(max_iter):
-            if np.linalg.norm(g) <= tol:
-                return OptimizationResult(x, oracle.f(x), k, oracle.f_count, oracle.g_count, oracle.h_count,
-                                          "Converged", path)
-
-            p = -G @ g
-            if np.dot(p, g) >= 0:
-                G = I.copy()
-                p = -g
-
-            alpha = backtracking_line_search(oracle, x, p, g)
-            x_next = x + alpha * p
-            path.append(x_next.copy())
-
-            g_next = oracle.grad(x_next)
-            s = x_next - x
-            y = g_next - g
-
-            rho = 1.0 / np.dot(y, s) if np.dot(y, s) != 0 else 0.0
-            if rho > 0:
-                G = (I - rho * np.outer(s, y)) @ G @ (I - rho * np.outer(y, s)) + rho * np.outer(s, s)
-
-            x, g = x_next, g_next
-
-        return OptimizationResult(x, oracle.f(x), max_iter, oracle.f_count, oracle.g_count, oracle.h_count,
-                                  "Max iterations reached", path)
+    return OptResult(x, fx, max_iter, cf.count, cg.count, ch.count,
+                     False, "Достигнут лимит итераций", traj)
 
 
-class LBFGSOptimizer:
-    """ Ограниченный по памяти квазиньютоновский метод L-BFGS. """
+def bfgs(
+    f: Callable, grad: Callable, hess: Callable,
+    x0: np.ndarray, eps: float = 1e-8, max_iter: int = MAX_ITER
+) -> OptResult:
+    cf = CallCounter(f); cg = CallCounter(grad); ch = CallCounter(hess)
 
-    def __init__(self, memory_size=5):
-        self.m = memory_size
+    x = x0.copy().astype(float)
+    n = len(x)
+    I = np.eye(n)
+    H = I.copy()
+    traj = [x.copy()]
+    g = cg(x)
+    fx = cf(x)
 
-    def minimize(self, oracle, x0, tol=1e-8, max_iter=1000):
-        x = x0.astype(float)
-        path = [x.copy()]
-        history = []  # Хранилище кортежей пар (s_k, y_k)
+    for k in range(max_iter):
+        if np.linalg.norm(g) < eps:
+            return OptResult(x, fx, k, cf.count, cg.count, ch.count,
+                             True, "Сходимость по градиенту", traj)
+        p = -H @ g
+        if float(p @ g) >= 0:
+            H = I.copy()
+            p = -g
+        alpha = wolfe_line_search(cf, cg, x, p, fx, g)
+        x_next = x + alpha * p
+        traj.append(x_next.copy())
+        f_next = cf(x_next)
+        g_next = cg(x_next)
+        if abs(f_next - fx) <= 1e-14 * (1.0 + abs(fx)):
+            conv = np.linalg.norm(g_next) < eps
+            status = "Сходимость по градиенту" if conv else "Стагнация по функции"
+            return OptResult(x_next, f_next, k + 1, cf.count, cg.count, ch.count,
+                             conv, status, traj)
+        s = x_next - x
+        y = g_next - g
+        sy = float(y @ s)
+        if sy > 1e-10:
+            rho = 1.0 / sy
+            V = I - rho * np.outer(s, y)
+            H = V @ H @ V.T + rho * np.outer(s, s)
+        x, g = x_next, g_next
+        fx = f_next
 
-        g = oracle.grad(x)
-        for k in range(max_iter):
-            if np.linalg.norm(g) <= tol:
-                return OptimizationResult(x, oracle.f(x), k, oracle.f_count, oracle.g_count, oracle.h_count,
-                                          "Converged", path)
+    return OptResult(x, fx, max_iter, cf.count, cg.count, ch.count,
+                     False, "Достигнут лимит итераций", traj)
 
-            # Двухэтапная рекурсия (Two-loop recursion)
-            q = g.copy()
-            alphas = []
 
-            for s_i, y_i, rho_i in reversed(history):
-                alpha_i = rho_i * np.dot(s_i, q)
-                alphas.append(alpha_i)
-                q -= alpha_i * y_i
+def lbfgs(
+    f: Callable, grad: Callable, hess: Callable,
+    x0: np.ndarray, eps: float = 1e-8, max_iter: int = MAX_ITER,
+    memory_size: int = 5
+) -> OptResult:
+    cf = CallCounter(f); cg = CallCounter(grad); ch = CallCounter(hess)
 
-            if len(history) > 0:
-                s_last, y_last, _ = history[-1]
-                gamma = np.dot(s_last, y_last) / np.dot(y_last, y_last)
-            else:
-                gamma = 1.0
+    x = x0.copy().astype(float)
+    traj = [x.copy()]
+    history = []
+    g = cg(x)
+    fx = cf(x)
 
-            r = gamma * q
-            for (s_i, y_i, rho_i), alpha_i in zip(history, reversed(alphas)):
-                beta_i = rho_i * np.dot(y_i, r)
-                r += s_i * (alpha_i - beta_i)
+    for k in range(max_iter):
+        if np.linalg.norm(g) < eps:
+            return OptResult(x, fx, k, cf.count, cg.count, ch.count,
+                             True, "Сходимость по градиенту", traj)
 
-            p = -r
-            alpha = backtracking_line_search(oracle, x, p, g)
-            x_next = x + alpha * p
-            path.append(x_next.copy())
+        q = g.copy()
+        alphas = []
+        for s_i, y_i, rho_i in reversed(history):
+            a_i = rho_i * float(s_i @ q)
+            alphas.append(a_i)
+            q = q - a_i * y_i
 
-            g_next = oracle.grad(x_next)
-            s = x_next - x
-            y = g_next - g
-            ys_dot = np.dot(y, s)
+        if history:
+            s_l, y_l, _ = history[-1]
+            gamma = float(s_l @ y_l) / float(y_l @ y_l)
+        else:
+            gamma = 1.0
 
-            if ys_dot > 1e-10:
-                rho = 1.0 / ys_dot
-                history.append((s, y, rho))
-                if len(history) > self.m:
-                    history.pop(0)
+        r = gamma * q
+        for (s_i, y_i, rho_i), a_i in zip(history, reversed(alphas)):
+            b_i = rho_i * float(y_i @ r)
+            r = r + s_i * (a_i - b_i)
 
-            x, g = x_next, g_next
+        p = -r
+        alpha = wolfe_line_search(cf, cg, x, p, fx, g)
+        x_next = x + alpha * p
+        traj.append(x_next.copy())
+        f_next = cf(x_next)
+        g_next = cg(x_next)
+        if abs(f_next - fx) <= 1e-14 * (1.0 + abs(fx)):
+            conv = np.linalg.norm(g_next) < eps
+            status = "Сходимость по градиенту" if conv else "Стагнация по функции"
+            return OptResult(x_next, f_next, k + 1, cf.count, cg.count, ch.count,
+                             conv, status, traj)
+        s = x_next - x
+        y = g_next - g
+        sy = float(y @ s)
+        if sy > 1e-10:
+            history.append((s, y, 1.0 / sy))
+            if len(history) > memory_size:
+                history.pop(0)
+        x, g = x_next, g_next
+        fx = f_next
 
-        return OptimizationResult(x, oracle.f(x), max_iter, oracle.f_count, oracle.g_count, oracle.h_count,
-                                  "Max iterations reached", path)
+    return OptResult(x, fx, max_iter, cf.count, cg.count, ch.count,
+                     False, "Достигнут лимит итераций", traj)

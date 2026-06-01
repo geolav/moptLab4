@@ -1,110 +1,78 @@
 import numpy as np
-from internal.utils.result import OptimizationResult
+from typing import Callable
+from ..utils import OptResult, CallCounter
+from .cg import MAX_ITER
 
 
-class PowellDogLeg:
-    def __init__(self, max_iter=1000, max_tr=10.0, initial_tr=1.0):
-        self.max_iter = max_iter
-        self.max_tr = max_tr
-        self.initial_tr = initial_tr
+def powell_dogleg(
+    f: Callable, grad: Callable, hess: Callable,
+    x0: np.ndarray, eps: float = 1e-8, max_iter: int = MAX_ITER,
+    max_tr: float = 10.0, initial_tr: float = 1.0
+) -> OptResult:
+    cf = CallCounter(f); cg = CallCounter(grad); ch = CallCounter(hess)
 
-    def minimize(self, oracle, x0, tol=1e-5):
-        x = np.array(x0, dtype=float)
-        tr_radius = self.initial_tr
-        path = [x.copy()]
+    x = x0.copy().astype(float)
+    n = len(x)
+    I = np.eye(n)
+    tr = initial_tr
+    traj = [x.copy()]
 
-        status = "Max iterations reached"
-        iters = self.max_iter
+    for k in range(max_iter):
+        g = cg(x)
+        ng = np.linalg.norm(g)
+        if ng < eps:
+            return OptResult(x, cf(x), k, cf.count, cg.count, ch.count,
+                             True, "Сходимость по градиенту", traj)
+        if tr < 1e-12:
+            return OptResult(x, cf(x), k, cf.count, cg.count, ch.count,
+                             False, "Стагнация: малый радиус доверия", traj)
 
-        for i in range(self.max_iter):
-            g = oracle.grad(x)
-            norm_g = np.linalg.norm(g)
+        B = ch(x)
+        w = np.linalg.eigvalsh(B)
+        if w.min() <= 1e-4:
+            B = B + (1e-3 - w.min()) * I
 
-            if norm_g < tol:
-                status = "Converged"
-                iters = i
-                break
+        gBg = float(g @ (B @ g))
+        tau = 1.0 if gBg <= 0 else min(1.0, ng**3 / (tr * gBg))
+        pC = -tau * (tr / ng) * g
+        npC = np.linalg.norm(pC)
 
-            B = oracle.hess(x)
+        try:
+            pN = np.linalg.solve(B, -g)
+        except np.linalg.LinAlgError:
+            pN = pC
+        npN = np.linalg.norm(pN)
 
-            # ИСПРАВЛЕНИЕ: Регуляризация матрицы Гессе для невыпуклых функций (Himmelblau, Ackley)
-            # Если матрица не является положительно определенной, сдвигаем её спектр
-            w, v = np.linalg.eigh(B)
-            if np.min(w) <= 1e-4:
-                tau_reg = max(0.0, 1e-3 - np.min(w))
-                B = B + tau_reg * np.eye(len(x))
-
-            # Точка Коши (Cauchy Point)
-            gBg = np.dot(g, np.dot(B, g))
-            if gBg <= 0:
-                tau = 1.0
+        if npN <= tr:
+            p = pN
+        elif npC >= tr:
+            p = (tr / npC) * pC if npC > 1e-12 else np.zeros_like(pC)
+        else:
+            d = pN - pC
+            a = float(d @ d)
+            b = 2 * float(pC @ d)
+            c = float(pC @ pC) - tr**2
+            disc = b * b - 4 * a * c
+            if disc < 0 or a == 0:
+                p = pC
             else:
-                tau = min(1.0, norm_g ** 3 / (tr_radius * gBg))
+                t = (-b + np.sqrt(disc)) / (2 * a)
+                p = pC + t * d
 
-            pC = -tau * (tr_radius / norm_g) * g
-            norm_pC = np.linalg.norm(pC)
+        mp = float(g @ p) + 0.5 * float(p @ (B @ p))
+        fx = cf(x)
+        f_new = cf(x + p)
+        pred = -mp
+        rho = 0.0 if pred < 1e-12 else (fx - f_new) / pred
 
-            # Ньютоновский шаг
-            try:
-                pN = np.linalg.solve(B, -g)
-            except np.linalg.LinAlgError:
-                pN = pC
+        if rho < 0.25:
+            tr *= 0.25
+        elif rho > 0.75 and abs(np.linalg.norm(p) - tr) < 1e-8:
+            tr = min(2.0 * tr, max_tr)
 
-            norm_pN = np.linalg.norm(pN)
+        if rho > 0:
+            x = x + p
+            traj.append(x.copy())
 
-            # Выбор шага DogLeg
-            if norm_pN <= tr_radius:
-                p = pN
-            elif norm_pC >= tr_radius:
-                if norm_pC < 1e-12:
-                    p = np.zeros_like(pC)
-                else:
-                    p = (tr_radius / norm_pC) * pC
-            else:
-                pB_pC = pN - pC
-                a = np.dot(pB_pC, pB_pC)
-                b = 2 * np.dot(pC, pB_pC)
-                c = np.dot(pC, pC) - tr_radius ** 2
-
-                discriminant = b ** 2 - 4 * a * c
-                if discriminant < 0 or a == 0:
-                    p = pC
-                else:
-                    tau_intersect = (-b + np.sqrt(discriminant)) / (2 * a)
-                    p = pC + tau_intersect * pB_pC
-
-            # Оценка шага (Trust Region Update)
-            m_p = np.dot(g, p) + 0.5 * np.dot(p, np.dot(B, p))
-
-            f_x = oracle.f(x)
-            f_new = oracle.f(x + p)
-
-            actual_reduction = f_x - f_new
-            predicted_reduction = -m_p
-
-            if predicted_reduction < 1e-12:
-                rho = 0
-            else:
-                rho = actual_reduction / predicted_reduction
-
-            if rho < 0.25:
-                tr_radius *= 0.25
-            else:
-                if rho > 0.75 and np.abs(np.linalg.norm(p) - tr_radius) < 1e-8:
-                    tr_radius = min(2.0 * tr_radius, self.max_tr)
-
-            if rho > 0:
-                x = x + p
-                path.append(x.copy())
-
-        # ИСПРАВЛЕНИЕ: Возвращаем строго позиционный формат аргументов для совместимости с OptimizationResult
-        return OptimizationResult(
-            x,
-            oracle.f(x),
-            iters,
-            oracle.f_count,
-            oracle.g_count,
-            oracle.h_count,
-            status,
-            path
-        )
+    return OptResult(x, cf(x), max_iter, cf.count, cg.count, ch.count,
+                     False, "Достигнут лимит итераций", traj)

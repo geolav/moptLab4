@@ -1,69 +1,63 @@
 import numpy as np
-from scipy.linalg import cholesky
-from internal.utils.result import OptimizationResult
-from internal.optimizers.cg import backtracking_line_search
+from typing import Callable
+from scipy.linalg import cho_factor, cho_solve
+from ..utils import OptResult, CallCounter
+from .cg import armijo_line_search, MAX_ITER
 
 
-class NewtonCholesky:
-    """ Метод Ньютона с использованием разложения Холецкого (без модификаций). """
+def newton_cholesky(
+    f: Callable, grad: Callable, hess: Callable,
+    x0: np.ndarray, eps: float = 1e-8, max_iter: int = MAX_ITER
+) -> OptResult:
+    cf = CallCounter(f); cg = CallCounter(grad); ch = CallCounter(hess)
 
-    def minimize(self, oracle, x0, tol=1e-8, max_iter=1000):
-        x = x0.astype(float)
-        path = [x.copy()]
+    x = x0.copy().astype(float)
+    traj = [x.copy()]
 
-        for k in range(max_iter):
-            g = oracle.grad(x)
-            if np.linalg.norm(g) <= tol:
-                return OptimizationResult(x, oracle.f(x), k, oracle.f_count, oracle.g_count, oracle.h_count,
-                                          "Converged", path)
+    for k in range(max_iter):
+        g = cg(x)
+        if np.linalg.norm(g) < eps:
+            return OptResult(x, cf(x), k, cf.count, cg.count, ch.count,
+                             True, "Сходимость по градиенту", traj)
+        H = ch(x)
+        try:
+            c, low = cho_factor(H)
+            p = cho_solve((c, low), -g)
+        except np.linalg.LinAlgError:
+            return OptResult(x, cf(x), k, cf.count, cg.count, ch.count,
+                             False, "Гессиан не положительно определён", traj)
+        x = x + p
+        traj.append(x.copy())
 
-            H = oracle.hess(x)
-            try:
-                # Разложение Холецкого: H = L @ L.T
-                L = cholesky(H, lower=True)
-                # Решение двух треугольных систем L y = -g и L.T p = y
-                y = np.linalg.solve(L, -g)
-                p = np.linalg.solve(L.T, y)
-            except np.linalg.LinAlgError:
-                return OptimizationResult(x, oracle.f(x), k, oracle.f_count, oracle.g_count, oracle.h_count,
-                                          "Stopped: Hessian is not Positive Definite", path)
-
-            x = x + p
-            path.append(x.copy())
-
-        return OptimizationResult(x, oracle.f(x), max_iter, oracle.f_count, oracle.g_count, oracle.h_count,
-                                  "Max iterations reached", path)
+    return OptResult(x, cf(x), max_iter, cf.count, cg.count, ch.count,
+                     False, "Достигнут лимит итераций", traj)
 
 
-class NewtonDirectionSearch:
-    """ Метод Ньютона с выбором направления и оптимизацией шага. """
+def newton_search(
+    f: Callable, grad: Callable, hess: Callable,
+    x0: np.ndarray, eps: float = 1e-8, max_iter: int = MAX_ITER
+) -> OptResult:
+    cf = CallCounter(f); cg = CallCounter(grad); ch = CallCounter(hess)
 
-    def minimize(self, oracle, x0, tol=1e-8, max_iter=1000):
-        x = x0.astype(float)
-        path = [x.copy()]
+    x = x0.copy().astype(float)
+    n = len(x)
+    I = np.eye(n)
+    traj = [x.copy()]
 
-        for k in range(max_iter):
-            g = oracle.grad(x)
-            if np.linalg.norm(g) <= tol:
-                return OptimizationResult(x, oracle.f(x), k, oracle.f_count, oracle.g_count, oracle.h_count,
-                                          "Converged", path)
+    for k in range(max_iter):
+        g = cg(x)
+        if np.linalg.norm(g) < eps:
+            return OptResult(x, cf(x), k, cf.count, cg.count, ch.count,
+                             True, "Сходимость по градиенту", traj)
+        H = ch(x)
+        w = np.linalg.eigvalsh(H)
+        if w.min() <= 1e-4:
+            H = H + (1e-3 - w.min()) * I
+        p = np.linalg.solve(H, -g)
+        fx = cf(x)
+        alpha = armijo_line_search(cf, x, p, fx, float(g @ p))
+        x = x + alpha * p
+        traj.append(x.copy())
 
-            H = oracle.hess(x)
-
-            # Регуляризация матрицы Гессе, если она не является положительно определенной
-            w, v = np.linalg.eigh(H)
-            if np.min(w) <= 1e-4:
-                tau = max(0.0, 1e-3 - np.min(w))
-                H_mod = H + tau * np.eye(len(x))
-            else:
-                H_mod = H
-
-            p = np.linalg.solve(H_mod, -g)
-
-            # Линейный поиск шага для обеспечения глобальной сходимости
-            alpha = backtracking_line_search(oracle, x, p, g)
-            x = x + alpha * p
-            path.append(x.copy())
-
-        return OptimizationResult(x, oracle.f(x), max_iter, oracle.f_count, oracle.g_count, oracle.h_count,
-                                  "Max iterations reached", path)
+    return OptResult(x, cf(x), max_iter, cf.count, cg.count, ch.count,
+                     False, "Достигнут лимит итераций", traj)

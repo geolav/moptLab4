@@ -1,57 +1,27 @@
-import numpy as np
-import pandas as pd
-from internal.utils.counter import ProfilerOracle
+from pathlib import Path
+from typing import Callable, Sequence
 
 
-class ExperimentRunner:
-    """
-    Класс для автоматизации пакетных запусков наборов оптимизаторов на заданных целях.
-    """
+def run(
+    tasks: Sequence[Callable],
+    output_root: str = "results",
+    save_graphs: bool = True,
+    save_tables: bool = True,
+) -> None:
+    root = Path(output_root)
+    plots_dir = root / "plots"
+    tables_dir = root / "tables"
 
-    def __init__(self, optimizers_dict):
-        self.optimizers = optimizers_dict
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    tables_dir.mkdir(parents=True, exist_ok=True)
 
-    def run_quadratic_suite(self, dimensions, conditions, repeats=3):
-        records = []
-        for n in dimensions:
-            for k in conditions:
-                for rep in range(repeats):
-                    from internal.functions.quadratic import QuadraticFunction
-                    func = QuadraticFunction(n, k, seed=42 + rep)
+    for task in tasks:
+        print("\n" + "#" * 80)
+        print(f" Running: {task.__name__} ".center(80))
+        print("#" * 80 + "\n")
+        task()
 
-                    for name, opt in self.optimizers.items():
-                        oracle = ProfilerOracle(func)
-                        x0 = np.ones(n) * 2.5
-
-                        try:
-                            res = opt.minimize(oracle, x0, tol=1e-8)
-                            records.append({
-                                "n": n, "k": k, "method": name,
-                                "iters": res.iters, "f_evals": res.f_evals,
-                                "g_evals": res.g_evals, "h_evals": res.h_evals,
-                                "status": res.status
-                            })
-                        except Exception as e:
-                            # В случае падения метода пишем лог, чтобы не ломать весь бенчмарк
-                            records.append({
-                                "n": n, "k": k, "method": name,
-                                "iters": np.nan, "f_evals": np.nan,
-                                "g_evals": np.nan, "h_evals": np.nan,
-                                "status": f"Failed: {str(e)}"
-                            })
-
-        df = pd.DataFrame(records)
-
-        # Исправлено: явно указываем numeric_only=True, чтобы pandas не пытался брать среднее от строк статуса
-        summary = df.groupby(['n', 'k', 'method']).mean(numeric_only=True).reset_index()
-        return summary
-
-    def run_fixed_function(self, func_obj, x0_points):
-        results = {}
-        for name, opt in self.optimizers.items():
-            results[name] = {}
-            for idx, x0 in enumerate(x0_points):
-                oracle = ProfilerOracle(func_obj)
-                res = opt.minimize(oracle, x0, tol=1e-8)
-                results[name][f"Point_{idx}"] = res
-        return results
+    if save_graphs:
+        print(f"Graphs saved in: {plots_dir}")
+    if save_tables:
+        print(f"Tables saved in: {tables_dir}")

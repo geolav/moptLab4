@@ -1,123 +1,174 @@
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from pathlib import Path
 
 
-def plot_benchmark_graphs(df, metric="iters", group_by="n", fixed_val=10, title="", save_path=None):
-    plt.figure(figsize=(10, 6))
+PLOTS_DIR = Path(__file__).resolve().parents[2] / "results" / "plots"
 
-    # Фильтруем данные в зависимости от того, по чему строим график
-    if group_by == "n":
-        sub_df = df[df["k"] == fixed_val]
-        x_col = "n"
-        xlabel = "Размерность пространства (n)"
+
+def _save(fig, filename: str):
+    if filename:
+        PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+        fig.savefig(PLOTS_DIR / filename, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+
+def plot_contour_with_trajectory(
+    f, title, trajectories: dict,
+    xlim=(-3, 3), ylim=(-3, 3),
+    n_levels=30, figsize=(8, 6), filename=None
+):
+    xx, yy = np.meshgrid(np.linspace(*xlim, 400), np.linspace(*ylim, 400))
+    zz = np.array([[f(np.array([xi, yi])) for xi, yi in zip(rx, ry)]
+                   for rx, ry in zip(xx, yy)])
+
+    fig, ax = plt.subplots(figsize=figsize)
+    finite = zz[np.isfinite(zz)]
+    levels = np.percentile(finite, np.linspace(0, 95, n_levels))
+    levels = np.unique(levels)
+    cs = ax.contourf(xx, yy, zz, levels=levels, cmap='viridis', alpha=0.7)
+    ax.contour(xx, yy, zz, levels=levels, colors='white', linewidths=0.3, alpha=0.5)
+    plt.colorbar(cs, ax=ax)
+
+    colors = ['red', 'orange', 'cyan', 'magenta', 'lime',
+              'blue', 'purple', 'brown', 'pink', 'gray']
+    for (label, traj), color in zip(trajectories.items(), colors):
+        pts = np.array(traj)
+        if len(pts) < 2:
+            continue
+        mask = ((pts[:, 0] >= xlim[0]) & (pts[:, 0] <= xlim[1]) &
+                (pts[:, 1] >= ylim[0]) & (pts[:, 1] <= ylim[1]))
+        cut = int(np.argmin(mask)) if not mask.all() else len(pts)
+        pts = pts[:max(cut, 2)]
+        ax.plot(pts[:, 0], pts[:, 1], '-o', color=color,
+                label=label, markersize=2, linewidth=1.5)
+        ax.plot(pts[0,  0], pts[0,  1], 's', color=color, markersize=8)
+        ax.plot(pts[-1, 0], pts[-1, 1], '*', color=color, markersize=10)
+
+    ax.set_title(title, fontsize=13)
+    ax.set_xlabel('x'); ax.set_ylabel('y')
+    ax.legend(loc='best', fontsize=7, framealpha=0.8)
+    ax.set_xlim(xlim); ax.set_ylim(ylim)
+    plt.tight_layout()
+    _save(fig, filename)
+
+
+def plot_iter_vs_step(steps, iters, title, xlabel='Шаг α', filename=None):
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.semilogy(steps, iters, 'o-', color='steelblue', linewidth=2)
+    ax.set_title(title, fontsize=13)
+    ax.set_xlabel(xlabel); ax.set_ylabel('Число итераций (log)')
+    ax.grid(True, alpha=0.4)
+    plt.tight_layout()
+    _save(fig, filename)
+
+
+def plot_metric_vs_param(
+    xvals, series: dict, title,
+    xlabel, ylabel='Число итераций',
+    filename=None, logx=False, logy=False
+):
+    fig, ax = plt.subplots(figsize=(8, 5))
+    cmap = plt.get_cmap('tab10')
+    for i, (name, ys) in enumerate(series.items()):
+        ax.plot(xvals, ys, 'o-', label=name, color=cmap(i % 10),
+                linewidth=1.8, markersize=4)
+    if logx:
+        ax.set_xscale('log')
+    if logy:
+        ax.set_yscale('log')
+    ax.set_title(title, fontsize=12)
+    ax.set_xlabel(xlabel); ax.set_ylabel(ylabel)
+    ax.grid(True, which='both', alpha=0.4)
+    ax.legend(fontsize=7, ncol=2, framealpha=0.85)
+    plt.tight_layout()
+    _save(fig, filename)
+
+
+def plot_surface(f, title, xlim, ylim, zlim, filename, cmap='viridis'):
+    from mpl_toolkits.mplot3d import Axes3D
+    xx, yy = np.meshgrid(np.linspace(*xlim, 150), np.linspace(*ylim, 150))
+    zz = np.vectorize(lambda a, b: f(np.array([a, b])))(xx, yy)
+    zz = np.where(np.isfinite(zz), zz, np.nan)
+    if zlim:
+        zz = np.clip(zz, *zlim)
+    fig = plt.figure(figsize=(7, 4.5))
+    ax  = fig.add_subplot(111, projection='3d')
+    ax.plot_surface(xx, yy, zz, cmap=cmap, alpha=0.88, lw=0, antialiased=True)
+    ax.set_title(title, fontsize=10)
+    ax.set_xlabel('x'); ax.set_ylabel('y'); ax.set_zlabel('f')
+    plt.tight_layout()
+    _save(fig, filename)
+
+
+def print_table(headers, rows, title="", slug=None):
+    if title:
+        print(f"\n{'─'*60}")
+        print(f"  {title}")
+        print(f"{'─'*60}")
+    col_w = [max(len(str(h)),
+                 max((len(str(r[i])) for r in rows), default=0)) + 2
+             for i, h in enumerate(headers)]
+    fmt = "  ".join(f"{{:<{w}}}" for w in col_w)
+    print(fmt.format(*headers))
+    print("  ".join("─" * w for w in col_w))
+    for row in rows:
+        print(fmt.format(*[str(c) for c in row]))
+    print()
+
+    import csv
+    tables_dir = Path(__file__).resolve().parents[2] / "results" / "tables"
+    tables_dir.mkdir(parents=True, exist_ok=True)
+    if slug:
+        safe = slug
     else:
-        sub_df = df[df["n"] == fixed_val]
-        x_col = "k"
-        xlabel = "Число обусловленности (k)"
+        safe = "".join(c if c.isalnum() or c in " _" else "_"
+                       for c in (title or "table")).strip().replace(" ", "_")
+    with open(tables_dir / f"{safe}.csv", "w", newline="", encoding="utf-8") as fp:
+        w = csv.writer(fp)
+        w.writerow(headers)
+        for r in rows:
+            w.writerow([str(c) for c in r])
 
-    for method in sub_df["method"].unique():
-        method_df = sub_df[sub_df["method"] == method]
-        plt.plot(method_df[x_col], method_df[metric], marker='o', label=method)
+    tex_path = tables_dir / f"{safe}.tex"
 
-    plt.title(title)
-    plt.xlabel(xlabel)
-    plt.ylabel("Итерации" if metric == "iters" else "Вызовы функции")
-    plt.grid(True, linestyle="--", alpha=0.6)
-    plt.legend()
+    def _escape(s: str) -> str:
+        repl = {
+            "\\": r"\textbackslash{}",
+            "%": r"\%",
+            "$": r"\$",
+            "#": r"\#",
+            "_": r"\_",
+            "{": r"\{",
+            "}": r"\}",
+            "~": r"\textasciitilde{}",
+            "^": r"\textasciicircum{}",
+            "&": r"\&",
+            "κ": r"$\kappa$",
+            "α": r"$\alpha$",
+            "ε": r"$\varepsilon$",
+            "✓": r"\checkmark",
+            "✗": r"$\times$",
+        }
+        for k, v in repl.items():
+            s = s.replace(k, v)
+        return s
 
-    if save_path:
-        plt.savefig(save_path, bbox_inches='tight', dpi=300)
-    plt.show()
-    plt.close()
-
-
-def plot_contour_and_trajectories(func_obj, trajectories, title="", x_range=(-5, 5), y_range=(-5, 5), save_path=None):
-    plt.figure(figsize=(8, 8))
-
-    x = np.linspace(x_range[0], x_range[1], 200)
-    y = np.linspace(y_range[0], y_range[1], 200)
-    X, Y = np.meshgrid(x, y)
-
-    # Считаем значения функции на сетке
-    Z = np.zeros_like(X)
-    for i in range(X.shape[0]):
-        for j in range(X.shape[1]):
-            Z[i, j] = func_obj.f(np.array([X[i, j], Y[i, j]]))
-
-    plt.contour(X, Y, Z, levels=50, cmap="viridis", alpha=0.6)
-
-    for name, path in trajectories.items():
-        if len(path) > 0:
-            path = np.array(path)
-            plt.plot(path[:, 0], path[:, 1], marker='.', linestyle='-', linewidth=1.5, label=name)
-            plt.plot(path[0, 0], path[0, 1], 'go')  # Старт
-            plt.plot(path[-1, 0], path[-1, 1], 'ro')  # Финиш
-
-    plt.title(title)
-    plt.xlabel("x1")
-    plt.ylabel("x2")
-    plt.xlim(x_range)
-    plt.ylim(y_range)
-    plt.grid(True, linestyle="--", alpha=0.5)
-    plt.legend(loc="best", fontsize="small")
-
-    if save_path:
-        plt.savefig(save_path, bbox_inches='tight', dpi=300)
-    plt.show()
-    plt.close()
-
-
-import numpy as np
-import matplotlib.pyplot as plt
-# from shortcuts import Axes3D  # Для старых версий, в новых достаточно projection='3d'
-
-
-# ... (ваши старые функции plot_benchmark_graphs и plot_contour_and_trajectories остаются) ...
-
-def plot_ackley_3d_side_view(func_obj, trajectories, title="Функция Экли в 3D (Вид сбоку)", x_range=(-3, 3),
-                             y_range=(-3, 3), save_path=None):
-    fig = plt.figure(figsize=(12, 8))
-    ax = fig.add_subplot(111, projection='3d')
-
-    # Строим сетку для поверхности
-    x = np.linspace(x_range[0], x_range[1], 100)
-    y = np.linspace(y_range[0], y_range[1], 100)
-    X, Y = np.meshgrid(x, y)
-
-    Z = np.zeros_like(X)
-    for i in range(X.shape[0]):
-        for j in range(X.shape[1]):
-            Z[i, j] = func_obj.f(np.array([X[i, j], Y[i, j]]))
-
-    # Рисуем саму «зубчатую воронку» Экли полупрозрачной, чтобы видеть траектории
-    surf = ax.plot_surface(X, Y, Z, rstride=1, cstride=1, cmap='viridis', edgecolor='none', alpha=0.3)
-
-    # Наносим траектории методов
-    for name, path in trajectories.items():
-        if len(path) > 0:
-            path = np.array(path)
-            # Считаем Z-координату (значение функции) для каждой точки пути
-            z_path = [func_obj.f(p) for p in path]
-            z_path = np.array(z_path)
-
-            # Рисуем линию движения в 3D пространстве
-            ax.plot(path[:, 0], path[:, 1], z_path, marker='.', linestyle='-', linewidth=2, label=name)
-            # Отмечаем старт и финиш
-            ax.scatter(path[0, 0], path[0, 1], z_path[0], color='green', s=50, zorder=5)
-            ax.scatter(path[-1, 0], path[-1, 1], z_path[-1], color='red', s=50, zorder=5)
-
-    ax.set_title(title, fontsize=14)
-    ax.set_xlabel('X1')
-    ax.set_ylabel('X2')
-    ax.set_zlabel('F(X1, X2) — Высота')
-
-    # КРИТИЧЕСКИЙ МОМЕНТ: Меняем угол обзора, чтобы смотреть именно СБОКУ
-    # elev — высота над плоскостью (установим пониже), azim — поворот вокруг оси Z
-    ax.view_init(elev=30, azim=135)
-
-    ax.legend(loc="best", fontsize="small")
-
-    if save_path:
-        plt.savefig(save_path, bbox_inches='tight', dpi=300)
-    plt.show()
-    plt.close()
+    with open(tex_path, "w", encoding="utf-8") as fp:
+        fp.write("\\begin{table}[H]\n")
+        fp.write("\\centering\n")
+        if title:
+            fp.write(f"\\caption{{{_escape(title)}}}\n")
+            fp.write(f"\\label{{tab:{safe}}}\n")
+        colspec = 'l' + ''.join('c' for _ in range(len(headers)-1))
+        fp.write(f"\\begin{{tabular}}{{{colspec}}}\n")
+        fp.write("\\toprule\n")
+        fp.write(' & '.join(_escape(str(h)) for h in headers) + " \\\\ \n")
+        fp.write("\\midrule\n")
+        for r in rows:
+            fp.write(' & '.join(_escape(str(c)) for c in r) + " \\\\ \n")
+        fp.write("\\bottomrule\n")
+        fp.write("\\end{tabular}\n")
+        fp.write("\\end{table}\n")

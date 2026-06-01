@@ -1,26 +1,27 @@
 import numpy as np
+from typing import Callable
 from scipy.optimize import minimize
-from internal.utils.result import OptimizationResult
+from ..utils import OptResult, CallCounter
+from .cg import MAX_ITER
 
 
-class ScipyNewtonCG:
-    """ Обертка над библиотечным методом Newton-CG из scipy. """
+def scipy_newton_cg(
+    f: Callable, grad: Callable, hess: Callable,
+    x0: np.ndarray, eps: float = 1e-8, max_iter: int = MAX_ITER
+) -> OptResult:
+    cf = CallCounter(f); cg = CallCounter(grad); ch = CallCounter(hess)
 
-    def minimize(self, oracle, x0, tol=1e-8):
-        # Логирование пути через callback
-        path = [x0.copy()]
+    traj = [np.array(x0, dtype=float)]
 
-        def callback(xk):
-            path.append(xk.copy())
+    def cb(xk):
+        traj.append(np.array(xk, dtype=float))
 
-        res = minimize(
-            fun=oracle.f,
-            x0=x0,
-            method='Newton-CG',
-            jac=oracle.grad,
-            hess=oracle.hess,
-            tol=tol,
-            callback=callback
-        )
-        return OptimizationResult(res.x, res.fun, res.nit, oracle.f_count, oracle.g_count, oracle.h_count, res.message,
-                                  path)
+    res = minimize(
+        fun=cf, x0=x0.copy().astype(float), method='Newton-CG',
+        jac=cg, hess=ch, tol=eps, callback=cb,
+        options={'maxiter': max_iter}
+    )
+
+    return OptResult(res.x, float(res.fun), int(res.nit),
+                     cf.count, cg.count, ch.count,
+                     bool(res.success), str(res.message), traj)

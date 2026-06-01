@@ -1,18 +1,19 @@
-from .cg import ConjugateGradientQuad, NonlinearCGFR, NonlinearCGPR
-from .newton import NewtonCholesky, NewtonDirectionSearch
-from .dogleg import PowellDogLeg
-from .quasi_newton import DFPOptimizer, BFGSOptimizer, LBFGSOptimizer
-from .scipy_newton import ScipyNewtonCG
+from .cg import cg_quadratic, nonlinear_cg_fr, nonlinear_cg_pr, armijo_line_search
+from .newton import newton_cholesky, newton_search
+from .dogleg import powell_dogleg
+from .quasi_newton import dfp, bfgs, lbfgs
+from .scipy_newton import scipy_newton_cg
 
 __all__ = [
-    "ConjugateGradientQuad",
-    "NonlinearCGFR",
-    "NonlinearCGPR",
-    "NewtonCholesky",
-    "NewtonDirectionSearch",
-    "PowellDogLeg",
-    "DFPOptimizer",
-    "BFGSOptimizer",
-    "LBFGSOptimizer",
-    "ScipyNewtonCG"
+    'cg_quadratic',
+    'nonlinear_cg_fr',
+    'nonlinear_cg_pr',
+    'armijo_line_search',
+    'newton_cholesky',
+    'newton_search',
+    'powell_dogleg',
+    'dfp',
+    'bfgs',
+    'lbfgs',
+    'scipy_newton_cg',
 ]

@@ -1,14 +1,20 @@
-import sys
-import os
+from internal.tasks import (
+    quadratic_benchmark,
+    quadratic_trajectories_2d,
+    complex_functions,
+    lbfgs_memory_study,
+)
+from internal.runner import run
 
-# Автоматическое добавление родительской папки проекта в sys.path для устранения проблем импорта
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from internal.tasks import run_all_tasks
+def main():
+    run([
+        quadratic_benchmark,
+        quadratic_trajectories_2d,
+        complex_functions,
+        lbfgs_memory_study,
+    ], output_root="results", save_graphs=True, save_tables=True)
+
 
 if __name__ == "__main__":
-    print("=================================================================")
-    print("Запуск Лабораторной работы №4: Методы Ньютона и Сопряженных Направлений")
-    print("=================================================================\n")
-    run_all_tasks()
-    print("\nВсе симуляции и расчеты графиков успешно завершены!")
+    main()
